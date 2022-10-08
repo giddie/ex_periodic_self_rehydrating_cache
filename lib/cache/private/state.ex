@@ -5,18 +5,24 @@ defmodule Cache.Private.State do
   alias Cache.Private.Registration
 
   @enforce_keys [
-    :registrations_by_key
+    :name,
+    :registrations_by_key,
+    :keys_by_task_reference
   ]
   defstruct @enforce_keys
 
   @type t :: %Self{
-          registrations_by_key: %{atom() => Registration.t()}
+          name: atom(),
+          registrations_by_key: %{atom() => Registration.t()},
+          keys_by_task_reference: %{reference() => atom()}
         }
 
-  @spec new() :: Self.t()
-  def new() do
+  @spec new(atom()) :: Self.t()
+  def new(name) when is_atom(name) do
     %Self{
-      registrations_by_key: %{}
+      name: name,
+      registrations_by_key: %{},
+      keys_by_task_reference: %{}
     }
   end
 end
