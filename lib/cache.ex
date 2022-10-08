@@ -3,6 +3,10 @@ defmodule Cache do
   Periodic Self-Rehydrating Cache
   """
 
+  alias __MODULE__, as: Self
+  alias Self.Server
+
+  @type value_function :: (() -> {:ok, any()} | {:error, any()})
   @type result ::
           {:ok, any()}
           | {:error, :timeout}
@@ -24,17 +28,19 @@ defmodule Cache do
   The value is stored only if `{:ok, value}` is returned by `fun`. If `{:error, reason}` is
   returned, the value is not stored and `fun` must be retried on the next run.
   """
-  @spec register_function(
-          fun :: (() -> {:ok, any()} | {:error, any()}),
+  @spec register(
           key :: any(),
-          ttl :: non_neg_integer(),
-          refresh_interval :: non_neg_integer()
+          function :: value_function(),
+          ttl_ms :: non_neg_integer(),
+          refresh_interval_ms :: non_neg_integer()
         ) :: :ok | {:error, :already_registered}
-  def register_function(fun, _key, ttl_ms, refresh_interval_ms)
-      when is_function(fun, 0) and is_integer(ttl_ms) and ttl_ms > 0 and
+  def register(key, function, ttl_ms, refresh_interval_ms)
+      when is_atom(key) and
+             is_function(function, 0) and
+             is_integer(ttl_ms) and ttl_ms > 0 and
              is_integer(refresh_interval_ms) and
              refresh_interval_ms < ttl_ms do
-    :ok
+    Server.register(Server, key, function)
   end
 
   @doc """
@@ -50,8 +56,8 @@ defmodule Cache do
     - If `key` is not associated with any function, return `{:error, :not_registered}`
   """
   @spec get(any(), non_neg_integer()) :: result
-  def get(_key, timeout \\ 30_000)
+  def get(key, timeout \\ 30_000)
       when is_integer(timeout) and timeout > 0 do
-    {:error, :not_registered}
+    Server.get(Server, key)
   end
 end
