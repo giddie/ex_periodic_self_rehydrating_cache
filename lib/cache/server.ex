@@ -5,6 +5,7 @@ defmodule Cache.Server do
 
   alias __MODULE__, as: Self
   alias Cache.Private.State
+  alias Cache.Private.Registration
 
   use GenServer
 
@@ -39,7 +40,7 @@ defmodule Cache.Server do
   def handle_call({:get, key}, _from, %State{} = state) when is_atom(key) do
     case state.registrations_by_key[key] do
       nil -> {:error, :not_registered}
-      function -> function.()
+      %Registration{value: value} -> value
     end
     |> Kernel.then(fn value ->
       {:reply, value, state}
@@ -52,7 +53,12 @@ defmodule Cache.Server do
     if Map.has_key?(state.registrations_by_key, key) do
       {:reply, {:error, :already_registered}, state}
     else
-      registrations_by_key = Map.put(state.registrations_by_key, key, function)
+      registrations_by_key =
+        Map.put(state.registrations_by_key, key, %Registration{
+          value_function: function,
+          value: function.()
+        })
+
       state = %{state | registrations_by_key: registrations_by_key}
 
       {:reply, :ok, state}

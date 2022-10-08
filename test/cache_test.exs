@@ -41,4 +41,21 @@ defmodule CacheTest do
                100
              )
   end
+
+  test "value function should be called before the first get" do
+    test_pid = self()
+
+    value_function = fn ->
+      send(test_pid, :value_function_called)
+      :value
+    end
+
+    assert :ok = Cache.register(:key, value_function, 200, 100)
+    assert_receive :value_function_called, 100
+
+    assert Cache.get(:key) == :value
+
+    # It should _not_ have been called again for that get.
+    refute_receive :value_function_called, 100
+  end
 end
