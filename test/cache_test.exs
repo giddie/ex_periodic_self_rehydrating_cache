@@ -4,7 +4,7 @@ defmodule CacheTest do
   use ExUnit.Case, async: true
 
   setup do
-    {:ok, _pid} = Cache.Server.start_link()
+    Cache.clear()
     %{}
   end
 

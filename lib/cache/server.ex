@@ -11,9 +11,18 @@ defmodule Cache.Server do
 
   # Client
 
-  @spec start_link(atom()) :: {:ok, pid()}
-  def start_link(name \\ Self) when is_atom(name) do
+  @spec start_link([] | atom()) :: {:ok, pid()}
+  def start_link(arg \\ Self)
+
+  def start_link([]), do: start_link()
+
+  def start_link(name) when is_atom(name) do
     GenServer.start_link(Self, State.new(name), name: name)
+  end
+
+  @spec clear(GenServer.server()) :: :ok
+  def clear(server) do
+    GenServer.call(server, :clear)
   end
 
   @spec register(GenServer.server(), atom(), Cache.value_function()) ::
@@ -39,6 +48,12 @@ defmodule Cache.Server do
 
     {:ok, _pid} = Supervisor.start_link(children, strategy: :one_for_one)
     {:ok, state}
+  end
+
+  @impl GenServer
+  def handle_call(:clear, _from, %State{} = state) do
+    new_state = State.new(state.name)
+    {:reply, :ok, new_state}
   end
 
   @impl GenServer

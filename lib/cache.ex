@@ -13,6 +13,14 @@ defmodule Cache do
           | {:error, :not_registered}
 
   @doc """
+  Clears the cache and starts from scratch.
+  """
+  @spec clear() :: :ok
+  def clear() do
+    Server.clear(Server)
+  end
+
+  @doc """
   Registers a function that will be computed periodically to update the cache.
 
   Arguments:
