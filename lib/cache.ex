@@ -17,7 +17,10 @@ defmodule Cache do
   """
   @spec clear() :: :ok
   def clear() do
-    Server.clear(Server)
+    Supervisor.terminate_child(Cache.Application.Supervisor, Server)
+    {:ok, _pid} = Supervisor.restart_child(Cache.Application.Supervisor, Server)
+
+    :ok
   end
 
   @doc """
@@ -48,7 +51,7 @@ defmodule Cache do
              is_integer(ttl_ms) and ttl_ms > 0 and
              is_integer(refresh_interval_ms) and
              refresh_interval_ms < ttl_ms do
-    Server.register(Server, key, function)
+    Server.register(Server, key, function, ttl_ms, refresh_interval_ms)
   end
 
   @doc """

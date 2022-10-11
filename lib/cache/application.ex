@@ -3,6 +3,8 @@ defmodule Cache.Application do
   Starts a default Cache server.
   """
 
+  alias __MODULE__, as: Self
+
   @behaviour Application
 
   @impl Application
@@ -11,7 +13,7 @@ defmodule Cache.Application do
       Cache.Server
     ]
 
-    Supervisor.start_link(children, strategy: :one_for_one)
+    Supervisor.start_link(children, strategy: :one_for_one, name: Self.Supervisor)
   end
 
   @impl Application

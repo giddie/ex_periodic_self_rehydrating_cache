@@ -21,17 +21,21 @@ defmodule Cache.Server do
     GenServer.start_link(Self, State.new(name), name: name)
   end
 
-  @spec clear(GenServer.server()) :: :ok
-  def clear(server) do
-    GenServer.call(server, :clear)
-  end
-
-  @spec register(GenServer.server(), atom(), Cache.value_function()) ::
+  @spec register(
+          GenServer.server(),
+          atom(),
+          Cache.value_function(),
+          non_neg_integer(),
+          non_neg_integer()
+        ) ::
           :ok | {:error, :already_registered}
-  def register(server, key, function)
+  def register(server, key, function, ttl_ms, refresh_interval_ms)
       when is_atom(key) and
-             is_function(function, 0) do
-    GenServer.call(server, {:register, key, function})
+             is_function(function, 0) and
+             is_integer(ttl_ms) and ttl_ms > 0 and
+             is_integer(refresh_interval_ms) and
+             refresh_interval_ms < ttl_ms do
+    GenServer.call(server, {:register, key, function, ttl_ms, refresh_interval_ms})
   end
 
   @spec get(GenServer.server(), atom(), non_neg_integer()) :: Cache.result()
@@ -45,18 +49,51 @@ defmodule Cache.Server do
 
   @impl GenServer
   def init(%State{} = state) do
+    Process.flag(:trap_exit, true)
+
     children = [
       {Task.Supervisor, name: task_supervisor_name(state)}
     ]
 
-    {:ok, _pid} = Supervisor.start_link(children, strategy: :one_for_one)
+    {:ok, _pid} =
+      Supervisor.start_link(
+        children,
+        strategy: :one_for_one,
+        name: supervisor_name(state)
+      )
+
     {:ok, state}
   end
 
   @impl GenServer
-  def handle_call(:clear, _from, %State{} = state) do
-    new_state = State.new(state.name)
-    {:reply, :ok, new_state}
+  def handle_call(
+        {:register, key, function, ttl_ms, refresh_interval_ms},
+        _from,
+        %State{} = state
+      )
+      when is_atom(key) and
+             is_function(function, 0) and
+             is_integer(ttl_ms) and ttl_ms > 0 and
+             is_integer(refresh_interval_ms) and
+             refresh_interval_ms < ttl_ms do
+    if Map.has_key?(state.registrations_by_key, key) do
+      {:reply, {:error, :already_registered}, state}
+    else
+      state =
+        put_registration(
+          state,
+          key,
+          Registration.new(
+            function,
+            ttl_ms,
+            refresh_interval_ms
+          )
+        )
+
+      send(self(), {:refresh, key})
+
+      {:reply, :ok, state}
+    end
   end
 
   @impl GenServer
@@ -67,7 +104,7 @@ defmodule Cache.Server do
       nil ->
         {:reply, {:error, :not_registered}, state}
 
-      %Registration{refreshing: true} = registration ->
+      %Registration{refreshing: true, value: :none} = registration ->
         timeout_reference = Process.send_after(self(), {:timeout, :get, key, from}, timeout_ms)
 
         Map.put(
@@ -85,19 +122,6 @@ defmodule Cache.Server do
   end
 
   @impl GenServer
-  def handle_call({:register, key, function}, _from, %State{} = state)
-      when is_atom(key) and is_function(function, 0) do
-    if Map.has_key?(state.registrations_by_key, key) do
-      {:reply, {:error, :already_registered}, state}
-    else
-      state = put_registration(state, key, Registration.new(function))
-      send(self(), {:refresh, key})
-
-      {:reply, :ok, state}
-    end
-  end
-
-  @impl GenServer
   def handle_info({:refresh, key}, %State{} = state)
       when is_atom(key) do
     case state.registrations_by_key[key] do
@@ -110,6 +134,8 @@ defmodule Cache.Server do
             task_supervisor_name(state),
             registration.value_function
           )
+
+        Process.send_after(self(), {:refresh, key}, registration.refresh_interval_ms)
 
         state
         |> put_task_reference(task_reference, key)
@@ -125,6 +151,14 @@ defmodule Cache.Server do
     update_registration(state, key, fn %Registration{} = registration ->
       Map.delete(registration.calls_awaiting_response, from)
       |> Kernel.then(&%{registration | calls_awaiting_response: &1})
+    end)
+    |> Kernel.then(&{:noreply, &1})
+  end
+
+  @impl GenServer
+  def handle_info({:timeout, :ttl, key}, %State{} = state) do
+    update_registration(state, key, fn %Registration{} = registration ->
+      %{registration | value: :none}
     end)
     |> Kernel.then(&{:noreply, &1})
   end
@@ -150,6 +184,16 @@ defmodule Cache.Server do
       when is_reference(reference) do
     drop_task_reference(state, reference)
     |> Kernel.then(&{:noreply, &1})
+  end
+
+  @impl GenServer
+  def terminate(_reason, %State{} = state) do
+    :ok = Supervisor.stop(supervisor_name(state))
+  end
+
+  @spec supervisor_name(State.t()) :: atom()
+  defp supervisor_name(%State{} = state) do
+    :"#{state.name}.Supervisor"
   end
 
   @spec task_supervisor_name(State.t()) :: atom()
@@ -189,16 +233,28 @@ defmodule Cache.Server do
       Enum.each(
         registration.calls_awaiting_response,
         fn {from, %CallAwaitingResponse{} = call} ->
-          GenServer.reply(from, value)
+          GenServer.reply(from, {:ok, value})
           Process.cancel_timer(call.timeout_reference)
         end
       )
 
+      if not is_nil(registration.ttl_timer_reference) do
+        Process.cancel_timer(registration.ttl_timer_reference)
+      end
+
+      ttl_timer_reference =
+        Process.send_after(
+          self(),
+          {:timeout, :ttl, key},
+          registration.ttl_ms
+        )
+
       %{
         registration
         | refreshing: false,
-          value: value,
-          calls_awaiting_response: []
+          value: {:ok, value},
+          calls_awaiting_response: %{},
+          ttl_timer_reference: ttl_timer_reference
       }
     end)
   end
