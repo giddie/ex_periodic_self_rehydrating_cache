@@ -64,8 +64,8 @@ defmodule Cache do
     - If `key` is not associated with any function, return `{:error, :not_registered}`
   """
   @spec get(any(), non_neg_integer()) :: result
-  def get(key, timeout \\ 30_000)
-      when is_integer(timeout) and timeout > 0 do
-    Server.get(Server, key)
+  def get(key, timeout_ms \\ 30_000)
+      when is_integer(timeout_ms) and timeout_ms > 0 do
+    Server.get(Server, key, timeout_ms)
   end
 end

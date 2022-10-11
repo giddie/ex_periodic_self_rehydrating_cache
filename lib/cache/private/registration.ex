@@ -2,6 +2,7 @@ defmodule Cache.Private.Registration do
   @moduledoc false
 
   alias __MODULE__, as: Self
+  alias Cache.Private.CallAwaitingResponse
 
   @enforce_keys [
     :value_function,
@@ -15,7 +16,9 @@ defmodule Cache.Private.Registration do
           value_function: Cache.value_function(),
           value: any(),
           refreshing: boolean(),
-          calls_awaiting_response: [GenServer.from()]
+          calls_awaiting_response: %{
+            GenServer.from() => CallAwaitingResponse.t()
+          }
         }
 
   @spec new(Cache.value_function()) :: Self.t()
@@ -25,7 +28,7 @@ defmodule Cache.Private.Registration do
       value_function: value_function,
       value: :none,
       refreshing: false,
-      calls_awaiting_response: []
+      calls_awaiting_response: %{}
     }
   end
 end

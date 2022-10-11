@@ -16,7 +16,7 @@ defmodule CacheTest do
     assert :ok =
              Cache.register(
                :key,
-               fn -> :value end,
+               fn -> {:ok, :value} end,
                200,
                100
              )
@@ -28,7 +28,7 @@ defmodule CacheTest do
     assert :ok =
              Cache.register(
                :key,
-               fn -> :value end,
+               fn -> {:ok, :value} end,
                200,
                100
              )
@@ -36,7 +36,7 @@ defmodule CacheTest do
     assert {:error, :already_registered} =
              Cache.register(
                :key,
-               fn -> :value end,
+               fn -> {:ok, :value} end,
                200,
                100
              )
@@ -47,7 +47,7 @@ defmodule CacheTest do
 
     value_function = fn ->
       send(test_pid, :value_function_called)
-      :value
+      {:ok, :value}
     end
 
     assert :ok = Cache.register(:key, value_function, 200, 100)
@@ -59,10 +59,24 @@ defmodule CacheTest do
     refute_receive :value_function_called, 100
   end
 
+  test "short get timeout" do
+    assert :ok =
+             Cache.register(
+               :key,
+               fn -> {:ok, :value} end,
+               200,
+               100
+             )
+
+    assert Cache.get(:key, 100) == :value
+    # No further messages should be sent, e.g. from the timeout triggering.
+    refute_receive _, 500
+  end
+
   test "long-running value function" do
     value_function = fn ->
       Process.sleep(500)
-      :value
+      {:ok, :value}
     end
 
     # The value function should have been called asynchronously, so registration should return
@@ -74,7 +88,43 @@ defmodule CacheTest do
 
     assert elapsed_time_us / 1_000 < 100
 
-    # Getting the value should block until it's available.
+    # Getting the value with default timeout should block until it's available.
     assert Cache.get(:key) == :value
+  end
+
+  test "long-running value function: with short get timeout" do
+    value_function = fn ->
+      Process.sleep(200)
+      {:ok, :value}
+    end
+
+    Cache.register(:key, value_function, 200, 100)
+
+    assert {:error, :timeout} = Cache.get(:key, 10)
+    refute_receive _, 500
+  end
+
+  test "value function raises" do
+    assert :ok =
+             Cache.register(
+               :key,
+               fn -> raise "value function error" end,
+               200,
+               100
+             )
+
+    assert {:error, :timeout} = Cache.get(:key, 100)
+  end
+
+  test "value function returns an error" do
+    assert :ok =
+             Cache.register(
+               :key,
+               fn -> {:error, "value function error"} end,
+               200,
+               100
+             )
+
+    assert {:error, :timeout} = Cache.get(:key, 100)
   end
 end
