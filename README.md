@@ -1,6 +1,6 @@
 # PeriodicSelfRehydratingCache
 
-**TODO: Add description**
+This is intended primarily as a sample of my coding process and style in Elixir.
 
 ## Installation
 

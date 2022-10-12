@@ -1,6 +1,20 @@
 defmodule Cache.Server do
   @moduledoc """
   GenServer implementation for a Periodic Self-Rehydrating Cache
+
+  ## Usage
+
+      iex> Cache.Server.start_link(MyCache)
+      iex> Cache.Server.register(
+      ...>   MyCache,
+      ...>   :my_key,
+      ...>   fn -> {:ok, "My Value"} end,
+      ...>   10_000,
+      ...>   1_000
+      ...> )
+      :ok
+      iex> Cache.Server.get(MyCache, :my_key)
+      {:ok, "My Value"}
   """
 
   alias __MODULE__, as: Self
@@ -12,8 +26,13 @@ defmodule Cache.Server do
 
   # Client
 
+  @doc """
+  ## Arguments
+
+    - `name`: atom to be used as unique name for this cache.
+  """
   @spec start_link([] | atom()) :: {:ok, pid()}
-  def start_link(arg \\ Self)
+  def start_link(name \\ Self)
 
   def start_link([]), do: start_link()
 
@@ -21,6 +40,23 @@ defmodule Cache.Server do
     GenServer.start_link(Self, State.new(name), name: name)
   end
 
+  @doc """
+  Registers a function that will be computed periodically to update the cache.
+
+  ## Arguments
+
+    - `key`: associated with the function and is used to retrieve the stored value.
+    - `function`: a 0-arity function that computes the value and returns either `{:ok, value}` or
+      `{:error, reason}`.
+    - `ttl_ms` ("time to live"): how long (in milliseconds) the value is stored before it is
+      discarded if the value is not refreshed.
+    - `refresh_interval_ms`: how often (in milliseconds) the function is recomputed and the new
+      value stored. `refresh_interval` must be strictly smaller than `ttl`. After the value is
+      refreshed, the `ttl_ms` counter is restarted.
+
+  The value is stored only if `{:ok, value}` is returned by `function`. If `{:error, reason}` is
+  returned, the value is not stored and `function` must be retried on the next run.
+  """
   @spec register(
           GenServer.server(),
           atom(),
@@ -38,8 +74,21 @@ defmodule Cache.Server do
     GenServer.call(server, {:register, key, function, ttl_ms, refresh_interval_ms})
   end
 
+  @doc """
+  Get the value associated with `key`.
+
+  ## Details
+
+    - If the value for `key` is stored in the cache, the value is returned immediately.
+    - If a recomputation of the function is in progress, the last stored value is returned.
+    - If the value for `key` is not stored in the cache but a computation of the function
+      associated with this `key` is in progress, wait up to `timeout` milliseconds. If the value
+      is computed within this interval, the value is returned. If the computation does not finish
+      in this interval, `{:error, :timeout}` is returned.
+    - If `key` is not associated with any function, return `{:error, :not_registered}`
+  """
   @spec get(GenServer.server(), atom(), non_neg_integer()) :: Cache.result()
-  def get(server, key, timeout_ms)
+  def get(server, key, timeout_ms \\ 30_000)
       when is_atom(key) and
              is_integer(timeout_ms) and timeout_ms > 0 do
     GenServer.call(server, {:get, key, timeout_ms})
@@ -105,8 +154,11 @@ defmodule Cache.Server do
         {:reply, {:error, :not_registered}, state}
 
       %Registration{refreshing: true, value: :none} = registration ->
+        # If the value isn't available before this time has elapsed, we want to time out.
         timeout_reference = Process.send_after(self(), {:timeout, :get, key, from}, timeout_ms)
 
+        # We'll store a reference to this call so we can respond to it later, once the value
+        # becomes available.
         Map.put(
           registration.calls_awaiting_response,
           from,
@@ -116,11 +168,12 @@ defmodule Cache.Server do
         |> Kernel.then(&put_registration(state, key, &1))
         |> Kernel.then(&{:noreply, &1})
 
-      %Registration{value: value} ->
-        {:reply, value, state}
+      %Registration{value: {:ok, value}} ->
+        {:reply, {:ok, value}, state}
     end
   end
 
+  # Refreshes the value for a given key by calling the registered function.
   @impl GenServer
   def handle_info({:refresh, key}, %State{} = state)
       when is_atom(key) do
@@ -135,6 +188,7 @@ defmodule Cache.Server do
             registration.value_function
           )
 
+        # Refresh the value again after configured interval.
         Process.send_after(self(), {:refresh, key}, registration.refresh_interval_ms)
 
         state
@@ -144,6 +198,7 @@ defmodule Cache.Server do
     |> Kernel.then(&{:noreply, &1})
   end
 
+  # Called when a value for the key still isn't available after the timeout interval has elapsed.
   @impl GenServer
   def handle_info({:timeout, :get, key, from}, %State{} = state) do
     GenServer.reply(from, {:error, :timeout})
@@ -155,6 +210,7 @@ defmodule Cache.Server do
     |> Kernel.then(&{:noreply, &1})
   end
 
+  # Called when a key hasn't been refreshed after the configured TTL has expired.
   @impl GenServer
   def handle_info({:timeout, :ttl, key}, %State{} = state) do
     update_registration(state, key, fn %Registration{} = registration ->
@@ -163,6 +219,7 @@ defmodule Cache.Server do
     |> Kernel.then(&{:noreply, &1})
   end
 
+  # Called when a value-function task returns with a new value.
   @impl GenServer
   def handle_info({reference, result}, %State{} = state)
       when is_reference(reference) do
@@ -179,6 +236,7 @@ defmodule Cache.Server do
     end
   end
 
+  # Called when a value-function task process exits.
   @impl GenServer
   def handle_info({:DOWN, reference, :process, _pid, _reason}, %State{} = state)
       when is_reference(reference) do
@@ -230,6 +288,8 @@ defmodule Cache.Server do
   @spec update_registration_value(State.t(), atom(), any()) :: State.t()
   defp update_registration_value(%State{} = state, key, value) do
     update_registration(state, key, fn %Registration{} = registration ->
+      # There may be calls to `get` that are awaiting a response. We need to reply to each of them
+      # now that a value is available.
       Enum.each(
         registration.calls_awaiting_response,
         fn {from, %CallAwaitingResponse{} = call} ->
@@ -238,6 +298,7 @@ defmodule Cache.Server do
         end
       )
 
+      # Restart the TTL timer for this key now that a value's come in successfully.
       if not is_nil(registration.ttl_timer_reference) do
         Process.cancel_timer(registration.ttl_timer_reference)
       end
